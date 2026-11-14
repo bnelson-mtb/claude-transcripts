@@ -1,6 +1,6 @@
 {
   "name": "transcripts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "/transcripts: browse and delete Claude Code and Cowork session transcripts on this machine, and set the auto-delete period",
   "types": "./types/index.d.ts"
 }

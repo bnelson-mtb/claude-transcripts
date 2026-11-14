@@ -54,6 +54,8 @@ declare module 'claude-code' {
       focused: Shaped<string | null>
       busy: Shaped<string | null>
       notice: Shaped<string | null>
+      /** What the last Clean up now did, shown under its button. */
+      purgeResult: Shaped<{ text: string; isOk: boolean } | null>
     }
   }
 }

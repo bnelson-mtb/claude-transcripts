@@ -151,12 +151,28 @@ test('the purge asks first, then deletes what is past the period', async ($, on)
   await $.command.run({ command: 'transcripts' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'purge' })).toMatchObject({ props: { hotkey: 'c', plain: true } })
   await ui.press({ key: 'purge' })
   expect(calls.deletes.length).toBe(0)
+  expect(await ui.find({ key: 'purge-no' })).toBeDefined()
   await ui.press({ key: 'purge-yes' })
   expect(JSON.parse(calls.deletes[0] ?? '{}').paths).toEqual([
     'C:\\Users\\t\\.claude\\projects\\C--repo\\old-desktop.jsonl',
   ])
+  expect((await ui.find({ type: 'Text', text: /^✓ Clean up done/ }))?.props).toMatchObject({ color: '#3fb950' })
+  await ui.unmount()
+})
+
+test('the Auto-delete policy sits above Refresh, and Clean up now below it', async ($, on) => {
+  const calls = fresh()
+  engine(on, calls)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'transcripts' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key)
+  expect(keys.indexOf('auto')).toBeLessThan(keys.indexOf('refresh'))
+  expect(keys.indexOf('hk-delete')).toBeLessThan(keys.indexOf('purge'))
+  expect((await ui.find({ type: 'Text', text: /Auto-delete policy/ }))?.props).toMatchObject({ color: '#7d5bb5' })
   await ui.unmount()
 })
 

@@ -9,6 +9,8 @@ const DEFAULT_DAYS = 30
 // 'default' sits where 30 would: it is the 30 days Claude Code uses when nothing is set.
 const PRESETS = [7, 14, 'default', 60, 90, 180, 365] as const
 const PURPLE = '#a371f7'
+/** The Auto-delete policy header: a dimmer purple, so it reads apart from the transcript groups. */
+const DIM_PURPLE = '#7d5bb5'
 const AMBER = '#d29922'
 const GREEN = '#3fb950'
 const DELETE_KEY = 'hk-delete'
@@ -32,6 +34,7 @@ const pendingAtom = atom({ plugin: 'transcripts', key: 'pending' } as const, nul
 const busyAtom = atom({ plugin: 'transcripts', key: 'busy' } as const, null, { shape: 'busy-1' })
 const noticeAtom = atom({ plugin: 'transcripts', key: 'notice' } as const, null, { shape: 'notice-1' })
 const focusedAtom = atom({ plugin: 'transcripts', key: 'focused' } as const, null, { shape: 'focused-1' })
+const purgeResultAtom = atom({ plugin: 'transcripts', key: 'purgeResult' } as const, null, { shape: 'purge-result-1' })
 
 type DeleteResult = {
   deleted: string[]
@@ -155,6 +158,7 @@ async function deleteRows($: EngineInterface, keys: readonly string[], then: str
   if (rows.length === 0) return
   await update($, busyAtom, () => `Deleting ${plural(rows.length, 'session')}…`)
   let text: string
+  let isOk = false
   try {
     const request = { paths: rows.flatMap(r => r.paths), records: rows.flatMap(r => r.records) }
     const result = (await runScript($, 'delete.ps1', JSON.stringify(request))) as DeleteResult
@@ -165,13 +169,16 @@ async function deleteRows($: EngineInterface, keys: readonly string[], then: str
       text += scan?.desktopRunning ? ' (restart the desktop app if it still lists them).' : '.'
     }
     if (skipped.length > 0) text += ` Skipped ${skipped.length}: ${skipped[0]?.reason ?? ''}.`
+    isOk = true
   } catch (err) {
     text = `Delete failed: ${message(err)}`
   }
   await update($, selectedAtom, () => null)
   await update($, busyAtom, () => null)
   await rescan($)
-  await update($, noticeAtom, () => text)
+  // The clean up reports under its own button; other deletes use the notice at the top.
+  if (then === 'purge') await update($, purgeResultAtom, () => ({ text: isOk ? `✓ Clean up done. ${text}` : text, isOk }))
+  else await update($, noticeAtom, () => text)
   await focusOn($, then)
 }
 
@@ -185,6 +192,7 @@ function anchors(p: NonNullable<TxPending>, rows: readonly TxRow[]): { back: str
 
 /** Shows a confirm and puts the highlight on its Cancel, so a stray Enter deletes nothing. */
 async function ask($: EngineInterface, p: NonNullable<TxPending>, cancelKey: string): Promise<void> {
+  if (p.kind === 'purge') await update($, purgeResultAtom, () => null)
   await update($, pendingAtom, () => p)
   await focusOn($, cancelKey)
 }
@@ -202,7 +210,18 @@ async function confirm($: EngineInterface): Promise<void> {
   await deleteRows($, p.kind === 'row' ? [p.key] : p.keys, anchors(p, rows).after)
 }
 
-type Target = { kind: 'row'; key: string } | { kind: 'group'; group: TxGroup } | { kind: 'purge' }
+/** Clean up now: asks to delete what is past the period, or says there is nothing to do. */
+async function askPurge($: EngineInterface, old: readonly TxRow[]): Promise<void> {
+  if (await read($, busyAtom)) return
+  if (old.length > 0) {
+    await ask($, { kind: 'purge', keys: old.map(r => r.key) }, 'purge-no')
+    return
+  }
+  const days = (await read($, cleanupAtom))?.effective ?? DEFAULT_DAYS
+  await update($, purgeResultAtom, () => ({ text: `✓ Checked: nothing is older than ${days} days.`, isOk: true }))
+}
+
+type Target ={ kind: 'row'; key: string } | { kind: 'group'; group: TxGroup } | { kind: 'purge' }
 
 /** What the highlighted element stands for: a session (its row or any of its buttons), a group, or the purge. */
 function targetOf(element: string | null, rows: readonly TxRow[]): Target | null {
@@ -243,8 +262,7 @@ async function pressDelete($: EngineInterface): Promise<void> {
     const cleanup = await read($, cleanupAtom)
     const cutoff = Date.now() - (cleanup?.effective ?? DEFAULT_DAYS) * DAY
     const old = rows.filter(r => (r.kind === 'code' || r.kind === 'leftover') && isDeletable(r) && r.mtimeMs < cutoff)
-    if (old.length === 0) await update($, noticeAtom, () => 'Nothing is past the auto-delete period.')
-    else await ask($, { kind: 'purge', keys: old.map(r => r.key) }, 'purge-no')
+    await askPurge($, old)
     return
   }
   if (target.kind === 'group') {
@@ -388,9 +406,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Input } = $.ui.resolve(e)
-    const [scan, cleanup, collapsed, selected, pending, busy, notice] = await Promise.all([
+    const [scan, cleanup, collapsed, selected, pending, busy, notice, purgeResult] = await Promise.all([
       read($, scanAtom), read($, cleanupAtom), read($, collapsedAtom), read($, selectedAtom),
-      read($, pendingAtom), read($, busyAtom), read($, noticeAtom),
+      read($, pendingAtom), read($, busyAtom), read($, noticeAtom), read($, purgeResultAtom),
     ])
     const cols = Math.max(40, e.props.bodyColumns)
     const now = Date.now()
@@ -503,7 +521,7 @@ export const register: Register = on => {
         {!e.props.isFocused && (
           <Text color={AMBER}>The keyboard is on the prompt: press ctrl+x tab (or click here) to use this pane.</Text>
         )}
-        <Text dimColor>↑↓ or Tab move · Enter select · d delete · r refresh · Esc cancel / close</Text>
+        <Text dimColor>↑↓ or Tab move · Enter select · d delete · r refresh · c clean up · Esc cancel / close</Text>
         {busy !== null && <Text color="yellow">{busy}</Text>}
         {notice !== null && (
           <Button key={stop('notice-dismiss')} plain onPress={() => update($, noticeAtom, () => null)}>
@@ -513,11 +531,6 @@ export const register: Register = on => {
         )}
 
         <Box flexDirection="column" marginTop={1}>
-          <Button key={stop('refresh')} plain hotkey="r" label="Refresh" {...start('refresh')} onPress={() => rescan($)} />
-          <Button key={DELETE_KEY} plain hotkey="d" label="Delete the highlighted item" onPress={() => pressDelete($)} />
-        </Box>
-
-        <Box flexDirection="column" marginTop={1}>
           <Button
             key={stop('auto')}
             plain
@@ -525,7 +538,7 @@ export const register: Register = on => {
               update($, collapsedAtom, c => (c.includes(AUTO_OPEN) ? c.filter(x => x !== AUTO_OPEN) : [...c, AUTO_OPEN]))
             }
           >
-            <Text color={PURPLE} bold>{`${isAutoOpen ? '▾' : '▸'} Auto-delete`}</Text>
+            <Text color={DIM_PURPLE} bold>{`${isAutoOpen ? '▾' : '▸'} Auto-delete policy`}</Text>
             <Text dimColor>{`  Code transcripts after ${days} days${source}`}</Text>
           </Button>
           {isAutoOpen && (
@@ -554,6 +567,8 @@ export const register: Register = on => {
         </Box>
 
         <Box flexDirection="column" marginTop={1}>
+          <Button key={stop('refresh')} plain hotkey="r" label="Refresh" {...start('refresh')} onPress={() => rescan($)} />
+          <Button key={DELETE_KEY} plain hotkey="d" label="Delete the highlighted item" onPress={() => pressDelete($)} />
           {pending?.kind === 'purge' ? (
             <Box flexDirection="column" borderStyle="round" paddingX={1}>
               <Text>
@@ -565,15 +580,18 @@ export const register: Register = on => {
           ) : (
             <Button
               key={stop('purge')}
+              plain
+              hotkey="c"
               label={
                 old.length > 0
                   ? `Clean up now: delete ${old.length} older than ${days} days (${size(oldBytes)})…`
                   : `Clean up now: nothing older than ${days} days`
               }
-              onPress={() =>
-                old.length > 0 ? ask($, { kind: 'purge', keys: old.map(r => r.key) }, 'purge-no') : undefined
-              }
+              onPress={() => askPurge($, old)}
             />
+          )}
+          {purgeResult !== null && pending?.kind !== 'purge' && (
+            <Text color={purgeResult.isOk ? GREEN : 'red'}>{purgeResult.text}</Text>
           )}
         </Box>
 
