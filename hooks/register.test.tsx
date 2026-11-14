@@ -182,7 +182,7 @@ test('a preset writes cleanupPeriodDays and keeps the other settings', async ($,
   await ui.unmount()
 })
 
-test('the pane opens as a dialog the keys walk, starting on the newest session', async ($, on) => {
+test('the pane opens as a dialog the keys walk, starting on the first group\'s newest session', async ($, on) => {
   const calls = fresh()
   engine(on, calls)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -190,7 +190,7 @@ test('the pane opens as a dialog the keys walk, starting on the newest session',
   expect(calls.opens[0]).toMatchObject({ id: 'transcripts', focus: true, closeOnEscape: true, holdToasts: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ key: 'row-tx:old-desktop' })).toMatchObject({ props: { autoFocus: true } })
+  expect(await ui.find({ key: 'row-tx:live-cli' })).toMatchObject({ props: { autoFocus: true } })
   await ui.unmount()
 })
 

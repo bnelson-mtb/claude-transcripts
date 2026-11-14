@@ -16,9 +16,9 @@ const DELETE_KEY = 'hk-delete'
 const AUTO_OPEN = 'auto:open'
 
 const GROUPS: readonly { id: TxGroup; label: string; noun: string }[] = [
-  { id: 'desktop', label: 'Desktop app (Code tab)', noun: 'desktop app' },
   { id: 'cli', label: 'CLI', noun: 'CLI' },
   { id: 'vscode', label: 'VS Code', noun: 'VS Code' },
+  { id: 'desktop', label: 'Desktop app (Code tab)', noun: 'desktop app' },
   { id: 'cowork', label: 'Cowork (local)', noun: 'Cowork' },
   { id: 'other', label: 'Other / leftovers', noun: 'other' },
 ]
