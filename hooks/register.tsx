@@ -1,5 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, UiCopyArgs } from 'claude-code'
+
+type Surface = UiCopyArgs['surface']
 
 import type { TxCleanup, TxGroup, TxPending, TxRow, TxScan } from '../types'
 
@@ -14,6 +16,12 @@ const DIM_PURPLE = '#7d5bb5'
 const AMBER = '#d29922'
 const GREEN = '#3fb950'
 const DELETE_KEY = 'hk-delete'
+const COPY_KEY = 'hk-copy'
+/** The hotkey buttons act on the highlight, so they never take it. */
+const HOTKEYS: readonly string[] = [DELETE_KEY, COPY_KEY]
+/** How long a clean up's success line stays (failures stay until the next clean up). */
+const DONE_MS = 8_000
+const CHECKED_MS = 3_000
 /** Kept in the collapsed list while the Auto-delete section is open (it starts closed). */
 const AUTO_OPEN = 'auto:open'
 
@@ -150,6 +158,22 @@ async function rescan($: EngineInterface): Promise<void> {
   }
 }
 
+// The pending auto-clear of the clean up's line; a newer line cancels the older one's.
+let purgeResultTimer: { cancel: () => void } | null = null
+
+/** Shows the clean up's result under its button; a success clears itself after `ms`. */
+async function showPurgeResult($: EngineInterface, text: string, isOk: boolean, ms: number): Promise<void> {
+  purgeResultTimer?.cancel()
+  purgeResultTimer = null
+  await update($, purgeResultAtom, () => ({ text, isOk }))
+  if (isOk) {
+    purgeResultTimer = $.clock.after(ms, () => {
+      purgeResultTimer = null
+      void update($, purgeResultAtom, () => null)
+    })
+  }
+}
+
 async function deleteRows($: EngineInterface, keys: readonly string[], then: string): Promise<void> {
   if (await read($, busyAtom)) return
   const scan = await read($, scanAtom)
@@ -177,7 +201,7 @@ async function deleteRows($: EngineInterface, keys: readonly string[], then: str
   await update($, busyAtom, () => null)
   await rescan($)
   // The clean up reports under its own button; other deletes use the notice at the top.
-  if (then === 'purge') await update($, purgeResultAtom, () => ({ text: isOk ? `✓ Clean up done. ${text}` : text, isOk }))
+  if (then === 'purge') await showPurgeResult($, isOk ? `✓ Clean up done. ${text}` : text, isOk, DONE_MS)
   else await update($, noticeAtom, () => text)
   await focusOn($, then)
 }
@@ -218,7 +242,31 @@ async function askPurge($: EngineInterface, old: readonly TxRow[]): Promise<void
     return
   }
   const days = (await read($, cleanupAtom))?.effective ?? DEFAULT_DAYS
-  await update($, purgeResultAtom, () => ({ text: `✓ Checked: nothing is older than ${days} days.`, isOk: true }))
+  await showPurgeResult($, `✓ Checked: nothing is older than ${days} days.`, true, CHECKED_MS)
+}
+
+/** Copies `cd "<folder>"; claude --resume <id>` for a Code session. */
+async function copyResume($: EngineInterface, r: TxRow, surface: Surface): Promise<void> {
+  const id = r.ids[0]
+  if (r.kind !== 'code' || id === undefined) {
+    await update($, noticeAtom, () => `"${r.title}" has no resume command (only Code sessions do).`)
+    return
+  }
+  const where = r.cwd !== '' ? `cd "${r.cwd}"; ` : ''
+  const copied = await $.ui.copy({ text: `${where}claude --resume ${id}`, surface })
+  await update($, noticeAtom, () => (copied.isCopied ? 'Resume command copied.' : 'Could not copy to the clipboard.'))
+}
+
+/** The `c` key: copies the resume command of the highlighted session. */
+async function pressCopy($: EngineInterface, surface: Surface): Promise<void> {
+  const rows = (await read($, scanAtom))?.rows ?? []
+  const target = targetOf(await read($, focusedAtom), rows)
+  const row = target?.kind === 'row' ? rows.find(r => r.key === target.key) : undefined
+  if (!row) {
+    await update($, noticeAtom, () => 'Highlight a session with the arrows, then press c to copy its resume command.')
+    return
+  }
+  await copyResume($, row, surface)
 }
 
 type Target ={ kind: 'row'; key: string } | { kind: 'group'; group: TxGroup } | { kind: 'purge' }
@@ -373,7 +421,7 @@ export const register: Register = on => {
     const shape = e as { element?: string; key?: string }
     const element = shape.element ?? shape.key
     if (e.requestId === PANE && element !== undefined && moved.deny === undefined) {
-      if (element !== DELETE_KEY) await update($, focusedAtom, () => element)
+      if (!HOTKEYS.includes(element)) await update($, focusedAtom, () => element)
       try {
         await $.ui.scroll({ in: PANE, to: { key: element } })
       } catch {
@@ -392,7 +440,7 @@ export const register: Register = on => {
     if (e.requestId !== PANE || e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1) {
       return next(e)
     }
-    const stops = order.filter(key => key !== DELETE_KEY)
+    const stops = order.filter(key => !HOTKEYS.includes(key))
     if (stops.length === 0) return next(e)
     const current = await read($, focusedAtom)
     const at = current === null ? -1 : stops.indexOf(current)
@@ -498,13 +546,7 @@ export const register: Register = on => {
                     <Button
                       key={stop(`copy-${r.key}`)}
                       label="Copy resume command"
-                      onPress={async pressed => {
-                        const where = r.cwd !== '' ? `cd "${r.cwd}"; ` : ''
-                        const copied = await $.ui.copy({ text: `${where}claude --resume ${r.ids[0]}`, surface: pressed.surface })
-                        await update($, noticeAtom, () =>
-                          copied.isCopied ? 'Resume command copied.' : 'Could not copy to the clipboard.',
-                        )
-                      }}
+                      onPress={pressed => copyResume($, r, pressed.surface)}
                     />
                   )}
                 </Box>
@@ -521,7 +563,7 @@ export const register: Register = on => {
         {!e.props.isFocused && (
           <Text color={AMBER}>The keyboard is on the prompt: press ctrl+x tab (or click here) to use this pane.</Text>
         )}
-        <Text dimColor>↑↓ or Tab move · Enter select · d delete · r refresh · c clean up · Esc cancel / close</Text>
+        <Text dimColor>↑↓ or Tab move · Enter select · d delete · c copy resume · r refresh · x clean up · Esc cancel / close</Text>
         {busy !== null && <Text color="yellow">{busy}</Text>}
         {notice !== null && (
           <Button key={stop('notice-dismiss')} plain onPress={() => update($, noticeAtom, () => null)}>
@@ -569,6 +611,13 @@ export const register: Register = on => {
         <Box flexDirection="column" marginTop={1}>
           <Button key={stop('refresh')} plain hotkey="r" label="Refresh" {...start('refresh')} onPress={() => rescan($)} />
           <Button key={DELETE_KEY} plain hotkey="d" label="Delete the highlighted item" onPress={() => pressDelete($)} />
+          <Button
+            key={COPY_KEY}
+            plain
+            hotkey="c"
+            label="Copy the highlighted session's resume command"
+            onPress={pressed => pressCopy($, pressed.surface)}
+          />
           {pending?.kind === 'purge' ? (
             <Box flexDirection="column" borderStyle="round" paddingX={1}>
               <Text>
@@ -581,7 +630,7 @@ export const register: Register = on => {
             <Button
               key={stop('purge')}
               plain
-              hotkey="c"
+              hotkey="x"
               label={
                 old.length > 0
                   ? `Clean up now: delete ${old.length} older than ${days} days (${size(oldBytes)})…`

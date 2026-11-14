@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const DAY = 86_400_000
 const now = Date.now()
@@ -151,7 +151,7 @@ test('the purge asks first, then deletes what is past the period', async ($, on)
   await $.command.run({ command: 'transcripts' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ key: 'purge' })).toMatchObject({ props: { hotkey: 'c', plain: true } })
+  expect(await ui.find({ key: 'purge' })).toMatchObject({ props: { hotkey: 'x', plain: true } })
   await ui.press({ key: 'purge' })
   expect(calls.deletes.length).toBe(0)
   expect(await ui.find({ key: 'purge-no' })).toBeDefined()
@@ -309,5 +309,44 @@ test('the Auto-delete list has 30 days (default) in the 30-day spot', async ($, 
   expect(await ui.find({ key: 'days-30' })).toBeUndefined()
   const labels = (await ui.findAll({ type: 'Button' })).map(b => b.text).filter(t => /days/.test(t ?? '') && !/Clean up|after/.test(t ?? ''))
   expect(labels).toEqual(['○ 7 days', '○ 14 days', '● 30 days (default)', '○ 60 days', '○ 90 days', '○ 180 days', '○ 365 days'])
+  await ui.unmount()
+})
+
+test("the clean up's success line clears itself after a few seconds", async ($, on) => {
+  const calls = fresh()
+  engine(on, calls)
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'transcripts' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'purge' })
+  await ui.press({ key: 'purge-yes' })
+  expect(await ui.find({ type: 'Text', text: /^✓ Clean up done/ })).toBeDefined()
+  await clock.advance(9_000)
+  expect(await ui.find({ type: 'Text', text: /^✓ Clean up done/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("c copies the highlighted session's resume command", async ($, on) => {
+  const calls = fresh()
+  engine(on, calls)
+  const copies: string[] = []
+  on('ui.copy', (_, e) => {
+    copies.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'transcripts' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'hk-copy' })).toMatchObject({ props: { hotkey: 'c' } })
+  await $.ui.focus({ requestId: 'transcripts', key: 'row-tx:old-desktop' })
+  await ui.press({ key: 'hk-copy' })
+  expect(copies).toEqual(['cd "C:\\repo"; claude --resume old-desktop'])
+  expect(await ui.find({ type: 'Text', text: /^Resume command copied/ })).toBeDefined()
+  // a Cowork session has no resume command
+  await $.ui.focus({ requestId: 'transcripts', key: 'row-cw:ditto_x' })
+  await ui.press({ key: 'hk-copy' })
+  expect(copies.length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /has no resume command/ })).toBeDefined()
   await ui.unmount()
 })
