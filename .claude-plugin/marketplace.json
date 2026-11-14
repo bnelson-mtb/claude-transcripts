@@ -1,0 +1,5 @@
+{
+  "name": "claude-transcripts",
+  "owner": { "name": "bnelson-mtb" },
+  "plugins": [{ "name": "transcripts", "source": "./" }]
+}
